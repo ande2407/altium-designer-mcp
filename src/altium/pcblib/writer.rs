@@ -1083,6 +1083,14 @@ fn resolve_body_outline(body: &ComponentBody, footprint: &Footprint) -> Vec<(f64
 
 /// Builds the parameter string for a `ComponentBody`.
 fn build_component_body_params(body: &ComponentBody) -> String {
+    // A body with no STEP model (no filename, not embedded) is a generic
+    // *extruded* body: Altium defines it by its 2D outline polygon plus the
+    // standoff/overall heights, with no model file. These bodies must be marked
+    // shape-based (ISSHAPEBASED=TRUE) and MODELTYPE=0 (Extruded); model-backed
+    // bodies (embedded or externally referenced STEP) use ISSHAPEBASED=FALSE and
+    // MODELTYPE=1.
+    let extruded = body.model_name.is_empty() && !body.embedded;
+
     let mut params = Vec::new();
 
     // V7_LAYER (Top3DBody is MECHANICAL6, Bottom3DBody is MECHANICAL7)
@@ -1098,7 +1106,10 @@ fn build_component_body_params(body: &ComponentBody) -> String {
     params.push("SUBPOLYINDEX=-1".to_string());
     params.push("UNIONINDEX=0".to_string());
     params.push("ARCRESOLUTION=0.5mil".to_string());
-    params.push("ISSHAPEBASED=FALSE".to_string());
+    params.push(format!(
+        "ISSHAPEBASED={}",
+        if extruded { "TRUE" } else { "FALSE" }
+    ));
     params.push("CAVITYHEIGHT=0mil".to_string());
     params.push(format!(
         "STANDOFFHEIGHT={}mil",
@@ -1137,7 +1148,8 @@ fn build_component_body_params(body: &ComponentBody) -> String {
     params.push(format!("MODEL.3D.ROTY={:.3}", body.rotation_y));
     params.push(format!("MODEL.3D.ROTZ={:.3}", body.rotation_z));
     params.push(format!("MODEL.3D.DZ={}mil", mm_to_mil(body.z_offset)));
-    params.push("MODEL.MODELTYPE=1".to_string());
+    // MODELTYPE 0 = Extruded (shape-based, no model file); 1 = generic/STEP model.
+    params.push(format!("MODEL.MODELTYPE={}", if extruded { 0 } else { 1 }));
     params.push("MODEL.MODELSOURCE=Undefined".to_string());
 
     params.join("|")
@@ -1614,6 +1626,25 @@ mod tests {
         assert_eq!(layer_to_id(Layer::TopPadMaster), 83);
         assert_eq!(layer_to_id(Layer::BottomPadMaster), 84);
         assert_eq!(layer_to_id(Layer::DRCDetailLayer), 85);
+    }
+
+    #[test]
+    fn test_component_body_extruded_vs_model_params() {
+        // Generic extruded body: no model name, not embedded.
+        let mut extruded = ComponentBody::new("", "");
+        extruded.embedded = false;
+        extruded.overall_height = 1.0;
+        extruded.standoff_height = 0.0;
+        let s = build_component_body_params(&extruded);
+        assert!(s.contains("ISSHAPEBASED=TRUE"), "got: {s}");
+        assert!(s.contains("MODEL.MODELTYPE=0"), "got: {s}");
+
+        // Model-backed body (STEP) keeps the legacy shape/type.
+        let mut model = ComponentBody::new("{GUID}", "part.step");
+        model.embedded = true;
+        let s = build_component_body_params(&model);
+        assert!(s.contains("ISSHAPEBASED=FALSE"), "got: {s}");
+        assert!(s.contains("MODEL.MODELTYPE=1"), "got: {s}");
     }
 
     #[test]
